@@ -1,0 +1,261 @@
+import numpy as np 
+import pandas as pd 
+import splitfolders
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import transforms
+from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from PIL import Image
+from torchvision.transforms import v2
+from torchvision import datasets
+
+transform = transforms.Compose([
+    transforms.Resize((200, 300)),  # Resize images to (width, height)
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomVerticalFlip(p=0.5),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+dataset = datasets.ImageFolder(root='C:/Users/Sam/Documents/rps/Train', transform=transform)
+
+test_dataset = datasets.ImageFolder(root='C:/Users/Sam/Documents/rps/Test', transform=transform)
+
+
+
+
+
+
+# Create a DataLoader #
+data_loader = DataLoader(dataset, batch_size=2, shuffle=True, num_workers=4)
+
+test_data_loader = DataLoader(test_dataset, batch_size = 2, shuffle = True, num_workers = 4)
+
+
+
+
+# Define Model #
+
+
+class CNN(nn.Module):
+    def __init__(self, num_classes):
+        super(CNN, self).__init__()
+        self.conv1 = nn.Conv2d(3, 4, 3, 2, 0, 1 )    
+        self.bn1 = nn.BatchNorm2d(4)
+        self.pool1 = nn.MaxPool2d(2)
+        self.conv2 = nn.Conv2d(4, 8, 3, 2, 0, 1)
+        self.bn2 = nn.BatchNorm2d(8)
+        self.pool2 = nn.MaxPool2d(2)
+        self.dropout1 = nn.Dropout(0.3)
+        self.fc1 = nn.Linear(8*12*18, 500) 
+        self.dropout2 = nn.Dropout(0.5)    
+        self.fc2 = nn.Linear(500, 3)
+    
+    def forward(self, x):
+        
+        x = self.bn1(F.relu(self.conv1(x)))
+        
+        x = self.pool1(x)
+        
+        x = self.bn2(F.relu(self.conv2(x)))
+        
+        x = self.pool2(x)
+        
+        x = x.view(x.size(0), -1)        #Flatten 3d tensor into 2d (Channels ,Width x Height) before FC layers
+        
+        x = self.dropout1(x)
+        x = F.relu(self.fc1(x))
+        x = self.dropout2(x)
+        x = self.fc2(x)
+        return x
+    
+
+
+# Training Loop #
+
+from torch.utils.data import RandomSampler
+import torch
+import os
+import gc
+from torch.cuda.amp import autocast, GradScaler
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = CNN(num_classes=3).to(device)
+criterion = nn.CrossEntropyLoss()
+scaler = GradScaler()
+train_sampler = RandomSampler(dataset)
+train_data = DataLoader(dataset, batch_size=2, sampler=train_sampler, num_workers=4)
+
+num_epochs = 3
+
+for epoch in range(num_epochs):
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    
+    
+
+    for batch_idx, (data, target) in enumerate(train_data):
+        data, target = data.to(device), target.to(device)
+        
+        if epoch == 1:
+            lr = (0.0001/((batch_idx + 200)/200))
+        elif epoch == 2 or epoch == 3:
+            lr = (0.0001/((batch_idx + 200)/200))
+        elif epoch ==4:
+            lr = (0.00001/((batch_idx + 200)/200))
+        elif epoch ==5:
+            lr = (0.0000001/((batch_idx + 200)/200))
+        elif epoch ==6:
+            lr = (0.00000005/((batch_idx + 200)/200))
+        optimizer = optim.Adam(model.parameters(), lr=0.01)
+
+        optimizer.zero_grad()
+        output = model(data)
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()
+        
+        running_loss += loss.item()
+        _, predicted = torch.max(output, 1)
+        total += target.size(0)
+        correct += (predicted == target).sum().item()
+        
+        if batch_idx % 10 == 0:
+            accuracy = correct / total
+            print(f'Epoch: {epoch+1}, Batch: {batch_idx}, Loss: {loss.item():.4f}, Accuracy: {accuracy:.4f}')
+            
+            home_dir = os.path.expanduser("~")
+            model_dir = os.path.join(home_dir, "my_models")
+            os.makedirs(model_dir, exist_ok=True)
+            model_path = os.path.join(model_dir, "my_model.pth")
+            torch.save(model.state_dict(), model_path)
+            print(f"Model saved to: {model_path}")
+        
+            
+        del data, target, output, loss
+        torch.cuda.empty_cache()
+
+    epoch_loss = running_loss / len(train_data)
+    epoch_accuracy = correct / total
+    print(f'Epoch {epoch+1} completed. Loss: {epoch_loss:.4f}, Accuracy: {epoch_accuracy:.4f}')
+
+    torch.cuda.empty_cache()
+    gc.collect()
+
+print("Training completed.")
+
+
+
+
+
+# Confusion Matrix #
+
+import os
+import torch
+from torch.utils.data import DataLoader
+from sklearn.metrics import confusion_matrix
+import numpy as np
+
+
+model = CNN(num_classes=3)  
+
+
+model_path = 'C:/Users/Sam/my_models/my_model.pth'
+
+
+
+try:
+    if os.path.isfile(model_path):
+        model.load_state_dict(torch.load(model_path))
+        print(f"Model loaded successfully from {model_path}")
+    else:
+        print(f"Error: No file found at {model_path}")
+        print("Available files in directory:")
+        print(os.listdir(os.path.dirname(model_path)))
+except PermissionError:
+    print(f"Permission denied when trying to access {model_path}")
+    print("Please check file permissions or try running the script as administrator.")
+except Exception as e:
+    print(f"An error occurred while loading the model: {str(e)}")
+
+model.eval()  # Set the model to eval
+
+# Create a DataLoader 
+test_loader = DataLoader(test_dataset, batch_size=2, shuffle=False)
+
+all_preds = []
+all_targets = []
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
+
+with torch.no_grad():
+    for data, target in test_loader:
+        data, target = data.to(device), target.to(device)
+        output = model(data)
+        _, predicted = torch.max(output, 1)
+        all_preds.extend(predicted.cpu().numpy())
+        all_targets.extend(target.cpu().numpy())
+
+cm = confusion_matrix(all_targets, all_preds)
+print("Confusion Matrix:")
+print(cm)
+
+
+
+
+# Inference # 
+
+import matplotlib.pyplot as plt
+
+def imshow(image, title=None):
+    print(f"Original image shape: {image.shape}")
+    if len(image.shape) == 3 and image.shape[0] == 3:
+        image = image.cpu().numpy().transpose((1, 2, 0))
+        image = np.clip(image, 0, 1)
+        plt.imshow(image)
+        if title is not None:
+            plt.title(title)
+        plt.show()
+    else:
+        print("Unexpected image shape, cannot display")
+
+def load_and_preprocess_image(image_path):
+    img = Image.open(image_path).convert('RGB')
+    preprocess = transforms.Compose([
+        transforms.Resize((200, 300)),  # Match the size used in training
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    img_tensor = preprocess(img)
+    return img_tensor
+
+def classify_rps(image_path, model):
+    image = load_and_preprocess_image(image_path)
+    image = image.to(device)
+    
+    model.eval()
+    with torch.no_grad():
+        output = model(image.unsqueeze(0))
+        _, predicted = torch.max(output, 1)
+        predicted_label = predicted.item()
+        
+        if predicted_label == 0:
+            inference = 'paper'
+        elif predicted_label == 1:
+            inference = 'rock'
+        elif predicted_label == 2:
+            inference = 'scissors'
+        else:
+            inference = 'No Inference'
+        print(inference)
+        
+        imshow(image)
+        time.sleep(20)
+
+#infer
+classify_rps('your_file_path', model)
